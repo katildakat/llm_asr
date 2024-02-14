@@ -8,6 +8,8 @@ class LLM_ASR(torch.nn.Module):
     self.llm = llm.to(self.device)
     self.audio_encoder = audio_encoder.to(self.device)
     self.tokenizer = tokenizer
+    self.tokenizer.add_bos_token = False
+    self.tokenizer.add_eos_token = False
     self.pool = torch.nn.AdaptiveAvgPool1d(num_tokens).to(self.device)
     self.projector = torch.nn.Linear(audio_encoder.config.hidden_size, llm.config.hidden_size).to(self.device)
     self.system_prompt = "You are an ASR system. Transcribe user's speech."
@@ -36,8 +38,6 @@ class LLM_ASR(torch.nn.Module):
   def populate_templates(self, batch_size=1):
     """Returns the system prompt embedding tensor and the embeddings for the special end tokens of the user prompt."""
     system_prompt = self.system_prompt
-    self.tokenizer.add_bos_token = False
-    self.tokenizer.add_eos_token = False
 
     prompt_template = """<s>[INST] <<SYS>>
     {system_prompt}
