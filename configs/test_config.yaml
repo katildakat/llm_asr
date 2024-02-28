@@ -1,0 +1,5 @@
+num_tokens: 60
+dataset_name: "data/common_voice_9_0_sv"
+whisper_model: "openai/whisper-large-v3"
+llama_model: "meta-llama/Llama-2-7b-chat-hf"
+num_epochs: 1
