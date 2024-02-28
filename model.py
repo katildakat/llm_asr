@@ -1,7 +1,7 @@
 import torch
 
 class LLM_ASR(torch.nn.Module):
-  def __init__(self, audio_encoder, llm, tokenizer, num_tokens=60, device=None):
+  def __init__(self, audio_encoder, llm, tokenizer, num_tokens=60, num_soft_prompts=None, device=None, saved_params=None):
     super(LLM_ASR, self).__init__()
     self.device = device if device is not None else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     self.num_tokens = num_tokens
@@ -12,7 +12,9 @@ class LLM_ASR(torch.nn.Module):
     self.tokenizer.add_eos_token = False
     self.pool = torch.nn.AdaptiveAvgPool1d(num_tokens).to(self.device)
     self.projector = torch.nn.Linear(audio_encoder.config.hidden_size, llm.config.hidden_size).to(self.device)
+    self.num_soft_prompts = num_soft_prompts
     self.system_prompt = "You are an ASR system. Transcribe user's speech."
+    self.soft_prompt_embeddings = None
 
     for param in self.llm.parameters():
         param.requires_grad = False
@@ -20,6 +22,18 @@ class LLM_ASR(torch.nn.Module):
     for param in self.audio_encoder.parameters():
         param.requires_grad = False
 
+    if self.num_soft_prompts is not None:
+      # add soft prompt embeddings
+      self.soft_prompt_embeddings = torch.nn.Parameter(torch.randn(self.num_soft_prompts, llm.config.hidden_size))
+    
+    if saved_params is not None:
+      # Load saved projector parameters if provided
+      if 'projector' in saved_params:
+          self.projector.load_state_dict(saved_params['projector'])
+      # Load saved soft prompt embeddings if provided and applicable
+      if 'soft_prompt_embeddings' in saved_params and self.soft_prompt_embeddings is not None:
+          self.soft_prompt_embeddings.data = saved_params['soft_prompt_embeddings']
+      
   def embed_audio(self, input_features):
     """Returns the audio embeddings for the input audio features,
     pools them into num_tokens mean vectors 
@@ -60,9 +74,15 @@ class LLM_ASR(torch.nn.Module):
   def get_input_embeds(self, input_features, labels=None):
     """Transforms the input audio features into audio token embeddings
     and injects them into the prompt tensors."""
+    
     speech_token_embeds = self.embed_audio(input_features)
     prompt_tensor, user_tensor = self.populate_templates(batch_size=speech_token_embeds.shape[0])
-    concatenated_tensor = torch.cat([prompt_tensor, speech_token_embeds, user_tensor], dim=1) # speech_token_embeds + user_tensor are part of one user_prompt that ends with " [/INST]""
+    
+    if self.soft_prompt_embeddings is not None:
+      soft_prompt_tensor = self.soft_prompt_embeddings.unsqueeze(0).repeat(speech_token_embeds.size(0), 1, 1)
+      concatenated_tensor = torch.cat([soft_prompt_tensor.to(self.device), prompt_tensor, speech_token_embeds, user_tensor], dim=1)
+    else:
+      concatenated_tensor = torch.cat([prompt_tensor, speech_token_embeds, user_tensor], dim=1) # speech_token_embeds + user_tensor are part of one user_prompt that ends with " [/INST]""
 
     return concatenated_tensor
 
@@ -78,9 +98,7 @@ class LLM_ASR(torch.nn.Module):
       #print("there are labels")
       # EMBED THE REF TRANSCRIPTS
       label_embeddings = self.llm.model.embed_tokens(labels['input_ids'].to(self.device))
-      #print('label tensor', label_embeddings.shape)
 
-      #print("concat tensor before labels", concatenated_tensor.shape)
       # APPEND THE REF TRANSCRIPTS TO THE PROMPT TENSOR
       concatenated_tensor = torch.cat([concatenated_tensor, label_embeddings], dim=1)
       #print("concat tensor after labels", concatenated_tensor.shape)
@@ -89,26 +107,20 @@ class LLM_ASR(torch.nn.Module):
       # the goal is to keep the masks for the label padding
       prompt_attention_mask = torch.ones((labels['attention_mask'].shape[0], prompt_len)) # tensor of ones for the prompt with shape batch_size x prompt_len
       attention_mask = torch.cat([prompt_attention_mask.to(self.device), labels['attention_mask'].to(self.device)], dim=1)
-      #print("prompt attention", prompt_attention_mask.shape)
-      #print("concat attention", attention_mask.shape)
 
       # replace prompt ids with -100
       prompt_padding = torch.full((concatenated_tensor.shape[0], prompt_len), -100) # -100 as ids for the prompt tokens to ignore them in the loss
       final_labels = torch.cat([prompt_padding.to(self.device), labels['input_ids'].to(self.device)], dim=1)
-      #print("final labels", final_labels.shape)
 
       outputs = self.llm(inputs_embeds=concatenated_tensor, attention_mask=attention_mask, labels=final_labels)
       loss = outputs.loss
       logits = outputs.logits
-      #print("------------\n")
+
       return {"loss": loss, "logits":logits, "label_ids":final_labels, "label_mask":attention_mask}
 
     else:
-      #print("concat tensor", concatenated_tensor.shape)
       # input audio tokens to llm
       outputs = self.llm(inputs_embeds=concatenated_tensor, labels=labels)
-      #print("logits", outputs.logits.shape)
-      #print("------------ no loss\n")
       return outputs
 
   def generate(self, input_features):
