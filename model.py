@@ -11,7 +11,9 @@ class LLM_ASR(torch.nn.Module):
     self.tokenizer.add_bos_token = False
     self.tokenizer.add_eos_token = False
     self.pool = torch.nn.AdaptiveAvgPool1d(num_tokens).to(self.device)
-    self.projector = torch.nn.Linear(audio_encoder.config.hidden_size, llm.config.hidden_size).to(self.device)
+    self.relu = torch.nn.ReLU()
+    self.transform = torch.nn.Linear(audio_encoder.config.hidden_size, llm.config.hidden_size).to(self.device)
+    self.project = torch.nn.Linear(llm.config.hidden_size, llm.config.hidden_size).to(self.device) 
     self.num_soft_prompts = num_soft_prompts
     self.system_prompt = "You are an ASR system. Transcribe user's speech."
     self.soft_prompt_embeddings = None
@@ -29,7 +31,8 @@ class LLM_ASR(torch.nn.Module):
     if saved_params is not None:
       # Load saved projector parameters if provided
       if 'projector' in saved_params:
-          self.projector.load_state_dict(saved_params['projector'])
+          self.transform.load_state_dict(saved_params['projector']['transform'])
+          self.project.load_state_dict(saved_params['projector']['project'])
       # Load saved soft prompt embeddings if provided and applicable
       if 'soft_prompt_embeddings' in saved_params and self.soft_prompt_embeddings is not None:
           self.soft_prompt_embeddings.data = saved_params['soft_prompt_embeddings']
@@ -45,9 +48,11 @@ class LLM_ASR(torch.nn.Module):
     pooled_embeds = pooled_embeds.permute(0, 2, 1) # swap dimensions back to batch x seq_len x hidden_size
 
     # get audio tokens
-    speech_token_embeds = self.projector(pooled_embeds)
+    speech_token_embeds = self.transform(pooled_embeds)
+    speech_token_embeds = self.relu(speech_token_embeds)
+    speech_token_embeds = self.project(speech_token_embeds)
     
-    return speech_token_embeds
+    return speech_token_embeds.to(dtype=torch.float16)
 
   def populate_templates(self, batch_size=1):
     """Returns the system prompt embedding tensor and the embeddings for the special end tokens of the user prompt."""
