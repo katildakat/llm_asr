@@ -1,2 +1,6 @@
 data/
 slurm*
+.ipynb_checkpoints/
+__pycache__/
+*.ipynb
+*.sh
