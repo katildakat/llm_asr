@@ -1,5 +1,8 @@
 num_tokens: 60
-dataset_name: "data/common_voice_9_0_sv"
+df_path: "../LT/data/swe_average_df.csv"
+split : 1
 whisper_model: "openai/whisper-large-v3"
 llama_model: "meta-llama/Llama-2-7b-chat-hf"
-num_epochs: 1
+soft_prompts: 20
+num_epochs: 5
+val_num : 200
